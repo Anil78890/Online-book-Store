@@ -33,8 +33,8 @@
 [[headers]]
   for = "/*"
   [headers.values]
-    X-Frame-Options = "DENY"
+    X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     Permissions-Policy = "camera=(), microphone=(), geolocation=()"
-    Content-Security-Policy = "default-src 'self'; img-src 'self' https: data:; connect-src 'self' https://gutendex.com https://openlibrary.org https://covers.openlibrary.org https://www.gutenberg.org https://gutenberg.org https://corsproxy.io https://api.allorigins.win; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+    Content-Security-Policy = "default-src 'self'; img-src 'self' https: data:; connect-src 'self' https://gutendex.com https://openlibrary.org https://covers.openlibrary.org https://www.gutenberg.org https://gutenberg.org https://archive.org https://*.archive.org https://standardebooks.org https://corsproxy.io https://api.allorigins.win; frame-src 'self' https://archive.org https://*.archive.org; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"

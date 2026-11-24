@@ -1,31 +1,35 @@
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import {
   ArrowLeft,
   BookmarkPlus,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  ExternalLink,
+  List,
   Loader2,
   Minus,
   Moon,
+  PanelRightOpen,
   Plus,
   RefreshCw,
+  Search,
   Sun,
-  BookOpen,
-  Clock,
-  PanelRightOpen,
   Type,
   X,
-  ExternalLink,
-  Search,
+  BookOpen,
 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { motion, useScroll, useMotionValueEvent } from 'framer-motion';
-import type { Book, BookSource } from '../types/book';
+import type { Book, BookSource, Chapter } from '../types/book';
 import {
   getAvailabilityLabel,
   getBookAuthors,
   getBookById,
   getBookContent,
   getBookCover,
+  extractChapters,
 } from '../services/books';
 import { useReadingAnalytics } from '../hooks/useReadingAnalytics';
 import { useHighlights, HighlightColor } from '../hooks/useHighlights';
@@ -61,12 +65,17 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
 
+  // Typography & Reader Preferences
   const [fontSize, setFontSize] = useState(() => readNumberSetting('blueleaf-reader-font-size', 18));
   const [theme, setTheme] = useState<ThemeMode>(() => (readStringSetting('blueleaf-reader-theme', 'light') as ThemeMode));
   const [fontFamily, setFontFamily] = useState(() => readStringSetting('blueleaf-reader-font-family', 'Georgia, serif'));
   const [lineHeight, setLineHeight] = useState(() => readStringSetting('blueleaf-reader-line-height', '1.8'));
   const [letterSpacing, setLetterSpacing] = useState(() => readStringSetting('blueleaf-reader-letter-spacing', 'normal'));
+  const [continuousScroll, setContinuousScroll] = useState(() => readStringSetting('blueleaf-reader-continuous', 'false') === 'true');
 
+  // Chapter navigation & progress
+  const [activeChapterIndex, setActiveChapterIndex] = useState(0);
+  const [showChaptersMenu, setShowChaptersMenu] = useState(false);
   const [progress, setProgress] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [showHighlightsPanel, setShowHighlightsPanel] = useState(false);
@@ -88,16 +97,51 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
     }
   });
 
+  // Extract structured chapters from loaded text
+  const chapters = useMemo<Chapter[]>(() => {
+    if (!content) return [];
+    return extractChapters(content);
+  }, [content]);
+
+  // Current active slice of text
+  const currentChapter = chapters[activeChapterIndex] || chapters[0];
+  const displayedText = useMemo(() => {
+    if (!content) return '';
+    if (continuousScroll || !currentChapter) return content;
+    return content.slice(currentChapter.startIndex, currentChapter.endIndex);
+  }, [content, continuousScroll, currentChapter]);
+
   const wordCount = useMemo(
     () => (content ? content.split(/\s+/).filter(word => word.length > 0).length : 0),
     [content],
   );
   const estimatedTotalMin = Math.ceil(wordCount / 200);
-  const remainingMin = Math.ceil(estimatedTotalMin * (1 - progress / 100));
 
-  const analytics = useReadingAnalytics(source, id, progress, wordCount);
+  // Overall book completion percentage
+  const overallProgress = useMemo(() => {
+    if (continuousScroll || chapters.length <= 1) return progress;
+    const chapterWeight = 100 / chapters.length;
+    const completedChapters = activeChapterIndex * chapterWeight;
+    const currentChapterContribution = (progress / 100) * chapterWeight;
+    return Math.min(100, Math.round(completedChapters + currentChapterContribution));
+  }, [continuousScroll, chapters.length, activeChapterIndex, progress]);
+
+  const remainingMin = Math.ceil(estimatedTotalMin * (1 - overallProgress / 100));
+
+  const analytics = useReadingAnalytics(source, id, overallProgress, wordCount);
   const { highlights, addHighlight, removeHighlight, updateNote } = useHighlights(source, id);
 
+  // Restore saved chapter index
+  useEffect(() => {
+    if (source && id) {
+      const savedIndex = readNumberSetting(`blueleaf-chapter-${source}-${id}`, 0);
+      if (savedIndex >= 0 && savedIndex < (chapters.length || 1)) {
+        setActiveChapterIndex(savedIndex);
+      }
+    }
+  }, [source, id, chapters.length]);
+
+  // Persist preferences
   useEffect(() => {
     localStorage.setItem('blueleaf-reader-font-size', String(fontSize));
   }, [fontSize]);
@@ -113,6 +157,27 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
   useEffect(() => {
     localStorage.setItem('blueleaf-reader-letter-spacing', letterSpacing);
   }, [letterSpacing]);
+  useEffect(() => {
+    localStorage.setItem('blueleaf-reader-continuous', String(continuousScroll));
+  }, [continuousScroll]);
+
+  // Persist chapter progress
+  const changeChapter = useCallback(
+    (index: number) => {
+      if (index >= 0 && index < chapters.length) {
+        setActiveChapterIndex(index);
+        setShowChaptersMenu(false);
+        if (source && id) {
+          localStorage.setItem(`blueleaf-chapter-${source}-${id}`, String(index));
+        }
+        if (readerRef.current) {
+          readerRef.current.scrollTop = 0;
+        }
+        setProgress(0);
+      }
+    },
+    [chapters.length, source, id],
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -133,8 +198,14 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
         const loadedBook = await getBookById(source, decodeURIComponent(id), controller.signal);
         setBook(loadedBook);
 
-        if (loadedBook.availability === 'metadata-only') {
-          setIsTextUnavailable(true);
+        if (loadedBook.readingCapability === 'METADATA_ONLY' || loadedBook.readingCapability === 'BORROW_REQUIRED') {
+          // If metadata-only or borrow-required, attempt to see if a Gutenberg full-text twin exists
+          try {
+            const loadedContent = await getBookContent(loadedBook, controller.signal);
+            setContent(loadedContent);
+          } catch {
+            setIsTextUnavailable(true);
+          }
         } else {
           try {
             const loadedContent = await getBookContent(loadedBook, controller.signal);
@@ -202,7 +273,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
       return { bg: 'bg-black text-gray-200', panel: 'bg-gray-900 border-gray-800', nav: 'bg-black border-gray-800' };
     if (theme === 'dark')
       return { bg: 'bg-gray-950 text-gray-100', panel: 'bg-gray-900 border-gray-800', nav: 'bg-gray-900 border-gray-800' };
-    return { bg: 'bg-amber-50 text-gray-900', panel: 'bg-white border-gray-200', nav: 'bg-white border-gray-200' };
+    return { bg: 'bg-amber-50/60 text-gray-900', panel: 'bg-white border-gray-200', nav: 'bg-white border-gray-200' };
   };
 
   const tClasses = getThemeClasses();
@@ -212,7 +283,8 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
       <main className="flex min-h-screen items-center justify-center bg-blue-50/50 pt-20">
         <div className="text-center text-slate-700">
           <Loader2 className="mx-auto mb-4 h-10 w-10 animate-spin text-blue-600" aria-hidden="true" />
-          <p className="font-semibold">Loading book…</p>
+          <p className="font-semibold text-slate-900">Retrieving book content…</p>
+          <p className="mt-1 text-xs text-slate-500">Checking local cache and authorized full-text sources</p>
         </div>
       </main>
     );
@@ -245,12 +317,13 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
   }
 
   const saved = isBookSaved(book);
-  const isReadable = book.availability === 'full-text' && !isTextUnavailable && content.length > 0;
+  const hasInAppFullText = !isTextUnavailable && content.length > 0;
+  const hasExternalEmbed = book.externalReaderUrl && (book.readingCapability === 'EXTERNAL_READER' || book.readingCapability === 'FULL_TEXT');
 
   return (
     <main className={`min-h-screen pt-20 ${tClasses.bg}`}>
-      {/* Reader Toolbar (only rendered when readable full text exists) */}
-      {isReadable && (
+      {/* Reader Toolbar (rendered when in-app full text is available) */}
+      {hasInAppFullText && (
         <>
           <motion.div
             variants={{ visible: { y: 0 }, hidden: { y: '-100%' } }}
@@ -258,35 +331,93 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
             transition={{ duration: 0.35, ease: 'easeInOut' }}
             className={`fixed left-0 right-0 top-16 z-30 border-b ${tClasses.nav} shadow-sm`}
           >
-            <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6">
+            <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
               <Link
                 to="/search"
-                className={`focus-ring inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold ${
+                className={`focus-ring inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-semibold ${
                   theme !== 'light' ? 'text-gray-100 hover:bg-gray-800' : 'text-gray-700 hover:bg-gray-100'
                 }`}
               >
-                <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back to catalogue
+                <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Back
               </Link>
 
-              <div className="flex flex-wrap items-center gap-2 md:gap-4">
-                <TTSControls text={content} onChunkHighlight={setTtsHighlightChunk} />
+              {/* Chapters Selector */}
+              {chapters.length > 1 && !continuousScroll && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowChaptersMenu(!showChaptersMenu)}
+                    className={`focus-ring inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                      theme !== 'light'
+                        ? 'border-gray-700 bg-gray-800 text-gray-200 hover:bg-gray-700'
+                        : 'border-gray-200 bg-white text-gray-800 hover:bg-gray-50 shadow-sm'
+                    }`}
+                    aria-expanded={showChaptersMenu}
+                    aria-label="Table of Contents"
+                  >
+                    <List className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span className="max-w-[130px] truncate sm:max-w-[200px]">
+                      {currentChapter ? currentChapter.title : 'Contents'}
+                    </span>
+                    <span className="text-gray-400">
+                      ({activeChapterIndex + 1}/{chapters.length})
+                    </span>
+                  </button>
 
-                <div className="mx-1 h-6 w-px bg-gray-300 dark:bg-gray-700" />
+                  {showChaptersMenu && (
+                    <div
+                      className={`absolute left-0 mt-2 max-h-80 w-72 overflow-y-auto rounded-2xl border p-2 shadow-xl z-50 ${
+                        theme !== 'light' ? 'border-gray-700 bg-gray-900 text-gray-100' : 'border-gray-200 bg-white text-gray-900'
+                      }`}
+                    >
+                      <div className="mb-2 px-3 py-1 text-xs font-bold uppercase tracking-wider text-gray-400">
+                        Table of Contents
+                      </div>
+                      <div className="space-y-1">
+                        {chapters.map((ch, idx) => (
+                          <button
+                            key={ch.id}
+                            type="button"
+                            onClick={() => changeChapter(idx)}
+                            className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-xs transition ${
+                              idx === activeChapterIndex
+                                ? 'bg-blue-600 font-semibold text-white'
+                                : theme !== 'light'
+                                  ? 'hover:bg-gray-800 text-gray-200'
+                                  : 'hover:bg-gray-100 text-gray-800'
+                            }`}
+                          >
+                            <span className="truncate pr-2">{ch.title}</span>
+                            <span className="shrink-0 text-[10px] opacity-70">
+                              ~{Math.max(1, Math.round(ch.wordCount / 200))}m
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 md:gap-3">
+                <TTSControls text={displayedText} onChunkHighlight={setTtsHighlightChunk} />
+
+                <div className="mx-1 h-5 w-px bg-gray-300 dark:bg-gray-700" />
 
                 <div className="flex items-center gap-1">
                   <button
                     type="button"
                     onClick={() => setFontSize(size => Math.max(14, size - 2))}
-                    className="focus-ring rounded-full p-2 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800"
+                    className="focus-ring rounded-full p-1.5 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800"
                     aria-label="Decrease reader font size"
                   >
                     <Minus className="h-4 w-4" aria-hidden="true" />
                   </button>
-                  <span className="min-w-12 text-center text-sm font-semibold">{fontSize}px</span>
+                  <span className="min-w-10 text-center text-xs font-semibold">{fontSize}px</span>
                   <button
                     type="button"
                     onClick={() => setFontSize(size => Math.min(32, size + 2))}
-                    className="focus-ring rounded-full p-2 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800"
+                    className="focus-ring rounded-full p-1.5 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800"
                     aria-label="Increase reader font size"
                   >
                     <Plus className="h-4 w-4" aria-hidden="true" />
@@ -296,7 +427,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                 <button
                   type="button"
                   onClick={toggleTheme}
-                  className="focus-ring rounded-full p-2 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800"
+                  className="focus-ring rounded-full p-1.5 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800"
                   aria-label="Toggle reader theme"
                 >
                   {theme === 'light' ? (
@@ -311,7 +442,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                 <button
                   type="button"
                   onClick={() => setShowSettings(!showSettings)}
-                  className={`focus-ring rounded-full p-2 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800 ${
+                  className={`focus-ring rounded-full p-1.5 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800 ${
                     showSettings ? 'bg-blue-50 text-blue-700 dark:bg-gray-800' : ''
                   }`}
                   aria-label="Typography Settings"
@@ -322,7 +453,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                 <button
                   type="button"
                   onClick={() => setShowHighlightsPanel(!showHighlightsPanel)}
-                  className={`focus-ring rounded-full p-2 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800 ${
+                  className={`focus-ring rounded-full p-1.5 hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-gray-800 ${
                     showHighlightsPanel ? 'bg-blue-50 text-blue-700 dark:bg-gray-800' : ''
                   }`}
                   aria-label="Toggle Highlights Panel"
@@ -332,6 +463,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
               </div>
             </div>
 
+            {/* Typography drawer */}
             {showSettings && (
               <div
                 className={`border-t ${
@@ -382,10 +514,25 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                       <option value="0.1em">0.1em (Extra Wide)</option>
                     </select>
                   </div>
+                  {chapters.length > 1 && (
+                    <div className="flex items-center gap-2 self-end pb-1">
+                      <input
+                        type="checkbox"
+                        id="continuous-mode"
+                        checked={continuousScroll}
+                        onChange={e => setContinuousScroll(e.target.checked)}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <label htmlFor="continuous-mode" className="text-xs font-medium cursor-pointer">
+                        Continuous Full-Text (No Chapter Chunking)
+                      </label>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
 
+            {/* Selection highlight popup */}
             {selection && (
               <div className="absolute bottom-[-50px] left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-gray-200 bg-white p-2 shadow-lg dark:border-gray-700 dark:bg-gray-800">
                 <span className="border-r border-gray-200 px-2 text-xs font-semibold dark:border-gray-700">Highlight:</span>
@@ -425,13 +572,13 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
             )}
 
             <div className="absolute bottom-0 left-0 right-0 h-1 translate-y-full bg-gray-200 dark:bg-gray-800" aria-hidden="true">
-              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
+              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${overallProgress}%` }} />
             </div>
           </motion.div>
 
           {hiddenToolbar && (
             <div className="fixed left-0 right-0 top-0 z-50 h-1 bg-gray-200 dark:bg-gray-800">
-              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progress}%` }} />
+              <div className="h-full bg-emerald-500 transition-all" style={{ width: `${overallProgress}%` }} />
             </div>
           )}
         </>
@@ -455,7 +602,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
             </p>
             <p
               className={`mt-4 inline-flex rounded-full px-3 py-1 text-xs font-bold ${
-                isReadable
+                hasInAppFullText
                   ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
                   : 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300'
               }`}
@@ -463,12 +610,17 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
               {getAvailabilityLabel(book)}
             </p>
 
-            {isReadable && (
+            {hasInAppFullText && (
               <div className={`mt-4 border-t pt-4 ${theme !== 'light' ? 'border-gray-800' : 'border-gray-100'} text-sm`}>
                 <div className="mb-2 flex items-center gap-2 text-gray-600 dark:text-gray-400">
                   <Clock className="h-4 w-4" />
                   <span>Est. reading time: ~{estimatedTotalMin} min</span>
                 </div>
+                {chapters.length > 1 && !continuousScroll && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    Chapter {activeChapterIndex + 1} of {chapters.length}
+                  </p>
+                )}
               </div>
             )}
 
@@ -510,12 +662,13 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
           </div>
         </aside>
 
-        {/* Reader or Metadata Record Display */}
+        {/* Reader or Provider View */}
         <section aria-labelledby="reader-heading" className="relative">
           <h2 id="reader-heading" className="sr-only">Reader content</h2>
 
-          {isReadable ? (
-            <>
+          {hasInAppFullText ? (
+            <div className="space-y-4">
+              {/* In-App Reader Canvas */}
               <div
                 ref={readerRef}
                 onScroll={updateProgress}
@@ -526,19 +679,124 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                 tabIndex={0}
                 aria-label={`Reading text for ${book.title}`}
               >
-                <pre className="whitespace-pre-wrap break-words font-inherit leading-inherit">{content}</pre>
+                {chapters.length > 1 && !continuousScroll && currentChapter && (
+                  <div className="mb-6 border-b border-gray-200/60 pb-3 dark:border-gray-800">
+                    <span className="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+                      {currentChapter.title}
+                    </span>
+                  </div>
+                )}
+                <pre className="whitespace-pre-wrap break-words font-inherit leading-inherit">{displayedText}</pre>
               </div>
 
-              <div className={`mt-4 flex items-center justify-between text-sm ${theme !== 'light' ? 'text-gray-400' : 'text-gray-600'}`}>
-                <p>Scroll progress: {progress}%</p>
-                {progress < 100 && <p>Estimated time remaining: ~{remainingMin} min</p>}
+              {/* Chapter Navigation Controls */}
+              {chapters.length > 1 && !continuousScroll && (
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => changeChapter(activeChapterIndex - 1)}
+                    disabled={activeChapterIndex === 0}
+                    className="focus-ring inline-flex items-center gap-1.5 rounded-full border border-gray-300 bg-white px-4 py-2 text-xs font-semibold text-gray-700 shadow-sm transition hover:bg-gray-50 disabled:opacity-40 disabled:pointer-events-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200"
+                  >
+                    <ChevronLeft className="h-4 w-4" /> Previous Chapter
+                  </button>
+
+                  <span className="text-xs font-medium text-gray-500">
+                    Chapter {activeChapterIndex + 1} of {chapters.length}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={() => changeChapter(activeChapterIndex + 1)}
+                    disabled={activeChapterIndex >= chapters.length - 1}
+                    className="focus-ring inline-flex items-center gap-1.5 rounded-full bg-blue-700 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-800 disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    Next Chapter <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+
+              <div className={`mt-2 flex items-center justify-between text-xs ${theme !== 'light' ? 'text-gray-400' : 'text-gray-600'}`}>
+                <p>Overall progress: {overallProgress}%</p>
+                {overallProgress < 100 && <p>Estimated time remaining: ~{remainingMin} min</p>}
               </div>
-            </>
+            </div>
+          ) : hasExternalEmbed ? (
+            /* Embedded Official Reader (e.g. Internet Archive Public Domain Embed) */
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">Official Internet Archive Reader</h3>
+                  <p className="text-xs text-slate-500">Public-domain digitized edition embedded directly.</p>
+                </div>
+                <a
+                  href={`https://archive.org/details/${encodeURIComponent(book.iaId || '')}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="focus-ring inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900"
+                >
+                  Open on Archive.org <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+              </div>
+              <div className="aspect-[4/3] w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 sm:aspect-[16/10]">
+                <iframe
+                  src={book.externalReaderUrl}
+                  title={`Internet Archive reader for ${book.title}`}
+                  className="h-full w-full border-0"
+                  allowFullScreen
+                />
+              </div>
+            </div>
+          ) : book.readingCapability === 'BORROW_REQUIRED' ? (
+            /* Open Library / Internet Archive Digital Lending */
+            <div className="rounded-3xl border border-slate-200 bg-white p-8 text-slate-800 shadow-sm sm:p-10">
+              <div className="max-w-2xl">
+                <span className="inline-flex rounded-full bg-indigo-100 px-3 py-1 text-xs font-bold text-indigo-800">
+                  Controlled Digital Lending
+                </span>
+                <h2 className="mt-3 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+                  {book.title}
+                </h2>
+                <p className="mt-1 text-base text-slate-600">{getBookAuthors(book)}</p>
+
+                <div className="my-6 rounded-2xl border border-indigo-100 bg-indigo-50/70 p-5 text-sm text-indigo-950">
+                  <p className="font-semibold">Borrowable via Open Library / Internet Archive</p>
+                  <p className="mt-1 text-indigo-900 leading-relaxed">
+                    This book is protected by copyright but available for borrowing through Open Library's authorized digital lending library. You can borrow and read the digitized copy with a free Open Library account.
+                  </p>
+                </div>
+
+                {book.description && (
+                  <div className="mb-6">
+                    <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-500">Summary</h3>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-700 whitespace-pre-line">{book.description}</p>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-6">
+                  <a
+                    href={book.borrowUrl || book.sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="focus-ring inline-flex items-center gap-2 rounded-full bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-800"
+                  >
+                    Borrow on Open Library <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                  </a>
+                  <Link
+                    to={`/search?q=${encodeURIComponent(book.title)}`}
+                    className="focus-ring inline-flex items-center gap-2 rounded-full border border-slate-300 px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    <Search className="h-4 w-4" aria-hidden="true" /> Search for Gutenberg edition
+                  </Link>
+                </div>
+              </div>
+            </div>
           ) : (
+            /* Metadata-Only Open Library Record */
             <div className="rounded-3xl border border-slate-200 bg-white p-8 text-slate-800 shadow-sm sm:p-10">
               <div className="max-w-2xl">
                 <span className="inline-flex rounded-full bg-sky-100 px-3 py-1 text-xs font-bold text-sky-800">
-                  Open Library Record
+                  Bibliographic Record
                 </span>
                 <h2 className="mt-3 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
                   {book.title}
@@ -548,7 +806,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                 <div className="my-6 rounded-2xl border border-sky-100 bg-sky-50/70 p-5 text-sm text-sky-950">
                   <p className="font-semibold">Full text unavailable for in-browser reading</p>
                   <p className="mt-1 text-sky-900 leading-relaxed">
-                    This work is catalogued from Open Library as an open bibliographic record. The complete digitised text is either still in copyright or not distributed as a free plain-text ebook.
+                    This work is catalogued from Open Library as an open bibliographic record. The complete digitised text is either in copyright or not distributed as an open plain-text ebook.
                   </p>
                 </div>
 

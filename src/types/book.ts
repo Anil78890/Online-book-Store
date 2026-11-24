@@ -2,6 +2,22 @@ export type BookSource = 'gutendex' | 'openlibrary';
 
 export type BookAvailability = 'full-text' | 'metadata-only';
 
+export type ReadingCapability =
+  | 'FULL_TEXT'
+  | 'PREVIEW'
+  | 'BORROW_REQUIRED'
+  | 'EXTERNAL_READER'
+  | 'METADATA_ONLY'
+  | 'UNAVAILABLE';
+
+export interface Chapter {
+  id: string;
+  title: string;
+  startIndex: number;
+  endIndex: number;
+  wordCount: number;
+}
+
 export interface BookAuthor {
   name: string;
 }
@@ -23,7 +39,14 @@ export interface Book {
   source: BookSource;
   sourceUrl: string;
   availability: BookAvailability;
+  readingCapability: ReadingCapability;
   description?: string;
+  iaId?: string;
+  ebookAccess?: string;
+  borrowUrl?: string;
+  previewUrl?: string;
+  externalReaderUrl?: string;
+  chapters?: Chapter[];
 }
 
 export interface GutendexPerson {
@@ -60,6 +83,10 @@ export interface OpenLibrarySearchDoc {
   language?: string[];
   edition_count?: number;
   first_publish_year?: number;
+  has_fulltext?: boolean;
+  ia?: string[];
+  ebook_access?: string;
+  lending_identifier_s?: string;
 }
 
 export interface OpenLibrarySearchResponse {
@@ -74,6 +101,13 @@ export interface OpenLibrarySubjectWork {
   subject?: string[];
   subjects?: string[];
   edition_count?: number;
+  has_fulltext?: boolean;
+  ia?: string;
+  availability?: {
+    status?: string;
+    isbn?: string | null;
+    open?: boolean;
+  };
 }
 
 export interface OpenLibrarySubjectResponse {
@@ -86,6 +120,7 @@ export interface OpenLibraryWorkResponse {
   description?: string | { value?: string };
   subjects?: string[];
   covers?: number[];
+  ia?: string[];
 }
 
 export type SourceFilter = 'all' | BookSource;

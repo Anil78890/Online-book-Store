@@ -28,6 +28,7 @@ describe('normalizeGutendexBook', () => {
     expect(book.title).toBe('Pride and Prejudice');
     expect(book.source).toBe('gutendex');
     expect(book.availability).toBe('full-text');
+    expect(book.readingCapability).toBe('FULL_TEXT');
     expect(book.authors[0]?.name).toBe('Austen, Jane');
     expect(book.formats.plainText).toBe('https://www.gutenberg.org/cache/epub/1342/pg1342.txt');
   });
@@ -47,6 +48,7 @@ describe('normalizeGutendexBook', () => {
 
     expect(book.source).toBe('gutendex');
     expect(book.availability).toBe('metadata-only');
+    expect(book.readingCapability).toBe('METADATA_ONLY');
   });
 
   it('handles malformed, null, or missing fields without crashing', () => {
@@ -88,6 +90,51 @@ describe('normalizeOpenLibrarySearchDoc', () => {
     expect(normalizeOpenLibrarySearchDoc({ title: 'No Key' })).toBeNull();
     expect(normalizeOpenLibrarySearchDoc({ key: '/works/OL1W' })).toBeNull();
     expect(normalizeOpenLibrarySearchDoc({ key: '', title: '' })).toBeNull();
+  });
+
+  it('marks public domain records with ia identifier as FULL_TEXT', () => {
+    const doc: OpenLibrarySearchDoc = {
+      key: '/works/OL999W',
+      title: 'Sense and Sensibility',
+      author_name: ['Jane Austen'],
+      ia: ['sensesensibility00aust'],
+      ebook_access: 'public',
+      has_fulltext: true,
+    };
+
+    const book = normalizeOpenLibrarySearchDoc(doc);
+    expect(book?.readingCapability).toBe('FULL_TEXT');
+    expect(book?.availability).toBe('full-text');
+    expect(book?.iaId).toBe('sensesensibility00aust');
+    expect(book?.externalReaderUrl).toContain('archive.org/embed/sensesensibility00aust');
+  });
+
+  it('marks borrowable records as BORROW_REQUIRED with legitimate borrow URL', () => {
+    const doc: OpenLibrarySearchDoc = {
+      key: '/works/OL888W',
+      title: 'Modern Novel',
+      author_name: ['Modern Author'],
+      ia: ['modernnovel00auth'],
+      ebook_access: 'borrowable',
+    };
+
+    const book = normalizeOpenLibrarySearchDoc(doc);
+    expect(book?.readingCapability).toBe('BORROW_REQUIRED');
+    expect(book?.availability).toBe('metadata-only');
+    expect(book?.borrowUrl).toBe('https://openlibrary.org/works/OL888W/borrow');
+  });
+
+  it('marks records without ebook access as METADATA_ONLY', () => {
+    const doc: OpenLibrarySearchDoc = {
+      key: '/works/OL777W',
+      title: 'Rare Manuscript',
+      author_name: ['Scholar'],
+      ebook_access: 'no_ebook',
+    };
+
+    const book = normalizeOpenLibrarySearchDoc(doc);
+    expect(book?.readingCapability).toBe('METADATA_ONLY');
+    expect(book?.availability).toBe('metadata-only');
   });
 });
 

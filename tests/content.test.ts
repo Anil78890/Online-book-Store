@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   toSameOriginProxyUrl,
   stripGutenbergBoilerplate,
+  extractChapters,
 } from '../src/services/books/content';
 
 describe('toSameOriginProxyUrl security allowlist', () => {
@@ -57,5 +58,45 @@ End of Project Gutenberg metadata.
   it('preserves text without markers intact without throwing', () => {
     const text = 'A clean book text without standard Gutenberg boilerplate markers.';
     expect(stripGutenbergBoilerplate(text)).toBe(text);
+  });
+});
+
+describe('extractChapters', () => {
+  it('extracts standard book chapter headings with offsets and word counts', () => {
+    const text = `
+CHAPTER I. Down the Rabbit-Hole
+
+Alice was beginning to get very tired of sitting by her sister on the bank, and of having nothing to do. Once or twice she had peeped into the book her sister was reading, but it had no pictures or conversations in it.
+
+CHAPTER II. The Pool of Tears
+
+Curiouser and curiouser! cried Alice (she was so much surprised, that for the moment she quite forgot how to speak good English). Now I am opening out like the largest telescope that ever was! Goodbye, feet!
+
+CHAPTER III. A Caucus-Race and a Long Tale
+
+They were indeed a queer-looking party that assembled on the bank: the birds with draggled feathers, the animals with their fur clinging close to them, and all dripping wet, cross, and uncomfortable.
+`;
+
+    const chapters = extractChapters(text);
+
+    expect(chapters.length).toBe(3);
+    expect(chapters[0]?.title).toBe('CHAPTER I. Down the Rabbit-Hole');
+    expect(chapters[1]?.title).toBe('CHAPTER II. The Pool of Tears');
+    expect(chapters[2]?.title).toBe('CHAPTER III. A Caucus-Race and a Long Tale');
+    expect(chapters[0]?.wordCount).toBeGreaterThan(20);
+    expect(chapters[1]?.startIndex).toBeGreaterThan(chapters[0]?.startIndex ?? 0);
+  });
+
+  it('provides fallback section chunks for long texts without chapter markers to avoid DOM freeze', () => {
+    // Generate text of 6000 words without chapter markers
+    const sentence = 'The quick brown fox jumps over the lazy dog and explores the open world. ';
+    const longText = sentence.repeat(500); // ~6000 words
+
+    const chapters = extractChapters(longText);
+
+    expect(chapters.length).toBeGreaterThanOrEqual(2);
+    expect(chapters[0]?.title).toBe('Section 1');
+    expect(chapters[1]?.title).toBe('Section 2');
+    expect(chapters[0]?.wordCount).toBeGreaterThanOrEqual(2500);
   });
 });

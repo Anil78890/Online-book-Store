@@ -1,4 +1,11 @@
-import type { Book, BookSource, GutendexBook, OpenLibrarySearchDoc, OpenLibrarySubjectWork } from '../../types/book';
+import type {
+  Book,
+  BookSource,
+  GutendexBook,
+  OpenLibrarySearchDoc,
+  OpenLibrarySubjectWork,
+  ReadingCapability,
+} from '../../types/book';
 import {
   fetchGutendexBook,
   fetchGutendexCategory,
@@ -16,7 +23,7 @@ import {
   normalizeOpenLibrarySubjectWork,
   normalizeOpenLibraryWork,
 } from './normalize';
-export { getBookContent, stripGutenbergBoilerplate } from './content';
+export { getBookContent, stripGutenbergBoilerplate, extractChapters } from './content';
 export { clearBookApiCache } from './http';
 
 const isAbortError = (error: unknown): boolean =>
@@ -31,10 +38,26 @@ const getBookDedupeKey = (book: Book): string => {
   return `${normTitle}::${primaryAuthor}`;
 };
 
+const CAPABILITY_WEIGHT: Record<ReadingCapability, number> = {
+  FULL_TEXT: 6,
+  EXTERNAL_READER: 5,
+  PREVIEW: 4,
+  BORROW_REQUIRED: 3,
+  METADATA_ONLY: 2,
+  UNAVAILABLE: 1,
+};
+
+const getCapabilityWeight = (book: Book): number => {
+  if (book.readingCapability) {
+    return CAPABILITY_WEIGHT[book.readingCapability] ?? 0;
+  }
+  return book.availability === 'full-text' ? CAPABILITY_WEIGHT.FULL_TEXT : CAPABILITY_WEIGHT.METADATA_ONLY;
+};
+
 /**
  * Deduplicate books:
  * 1. By source:id
- * 2. Cross-provider by title + author: prefer full-text Gutendex over metadata-only Open Library.
+ * 2. Cross-provider by title + author: prefer highest reading capability (FULL_TEXT > EXTERNAL_READER > BORROW_REQUIRED > METADATA_ONLY).
  */
 export const uniqueBooks = (books: Book[]): Book[] => {
   const seenIds = new Set<string>();
@@ -51,8 +74,10 @@ export const uniqueBooks = (books: Book[]): Book[] => {
     if (!existing) {
       byWork.set(workKey, book);
     } else {
-      // If existing is metadata-only but new one is full-text, upgrade to full-text
-      if (existing.availability !== 'full-text' && book.availability === 'full-text') {
+      const existingWeight = getCapabilityWeight(existing);
+      const currentWeight = getCapabilityWeight(book);
+
+      if (currentWeight > existingWeight) {
         byWork.set(workKey, book);
       }
     }
@@ -210,5 +235,38 @@ export const getBookCover = (book: Book): string =>
 export const getBookAuthors = (book: Book): string =>
   book.authors.length > 0 ? book.authors.map(author => author.name).join(', ') : 'Unknown Author';
 
-export const getAvailabilityLabel = (book: Book): string =>
-  book.availability === 'full-text' ? 'Free to read' : 'Open metadata';
+export const getAvailabilityLabel = (book: Book): string => {
+  switch (book.readingCapability) {
+    case 'FULL_TEXT':
+      return 'Free to read';
+    case 'PREVIEW':
+      return 'Preview available';
+    case 'BORROW_REQUIRED':
+      return 'Borrow on Open Library';
+    case 'EXTERNAL_READER':
+      return 'Official reader';
+    case 'METADATA_ONLY':
+      return 'Bibliographic record';
+    case 'UNAVAILABLE':
+      return 'Text unavailable';
+    default:
+      return book.availability === 'full-text' ? 'Free to read' : 'Bibliographic record';
+  }
+};
+
+export const getActionButtonLabel = (book: Book): string => {
+  switch (book.readingCapability) {
+    case 'FULL_TEXT':
+      return 'Read';
+    case 'PREVIEW':
+      return 'Preview';
+    case 'BORROW_REQUIRED':
+      return 'Borrow';
+    case 'EXTERNAL_READER':
+      return 'Read';
+    case 'METADATA_ONLY':
+    case 'UNAVAILABLE':
+    default:
+      return 'Details';
+  }
+};

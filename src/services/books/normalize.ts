@@ -1,9 +1,11 @@
 import type {
   Book,
+  BookAvailability,
   GutendexBook,
   OpenLibrarySearchDoc,
   OpenLibrarySubjectWork,
   OpenLibraryWorkResponse,
+  ReadingCapability,
 } from '../../types/book';
 
 const asStrings = (values: unknown): string[] => {
@@ -48,8 +50,12 @@ export const normalizeGutendexBook = (book: GutendexBook): Book => {
         ? formats['text/html; charset=utf-8']
         : undefined;
 
-  // Truthful availability: only mark full-text if a readable text or html source is present
-  const hasReadableContent = Boolean(plainTextUrl || htmlUrl || (raw.id && typeof raw.id === 'number'));
+  // Truthful availability: Gutenberg books with text/html have in-app full text available
+  const hasReadableContent = Boolean(
+    plainTextUrl ||
+      htmlUrl ||
+      (Boolean(raw.id) && typeof raw.id === 'number' && !formats['audio/mp3']),
+  );
 
   return {
     id,
@@ -72,6 +78,7 @@ export const normalizeGutendexBook = (book: GutendexBook): Book => {
     source: 'gutendex',
     sourceUrl: `https://www.gutenberg.org/ebooks/${id}`,
     availability: hasReadableContent ? 'full-text' : 'metadata-only',
+    readingCapability: hasReadableContent ? 'FULL_TEXT' : 'METADATA_ONLY',
   };
 };
 
@@ -81,6 +88,33 @@ export const normalizeOpenLibrarySearchDoc = (doc: OpenLibrarySearchDoc): Book |
     return null;
   const key = raw.key;
   const coverId = typeof raw.cover_i === 'number' ? raw.cover_i : undefined;
+  const iaList = asStrings(raw.ia);
+  const iaId = iaList[0];
+  const ebookAccess = typeof raw.ebook_access === 'string' ? raw.ebook_access.toLowerCase() : undefined;
+  const hasFulltext = Boolean(raw.has_fulltext);
+
+  let readingCapability: ReadingCapability = 'METADATA_ONLY';
+  let externalReaderUrl: string | undefined;
+  let borrowUrl: string | undefined;
+
+  if (ebookAccess === 'public' && iaId) {
+    readingCapability = 'FULL_TEXT';
+    externalReaderUrl = `https://archive.org/embed/${encodeURIComponent(iaId)}`;
+  } else if (ebookAccess === 'borrowable') {
+    readingCapability = 'BORROW_REQUIRED';
+    borrowUrl = `https://openlibrary.org${key}/borrow`;
+    if (iaId) {
+      externalReaderUrl = `https://archive.org/embed/${encodeURIComponent(iaId)}`;
+    }
+  } else if (ebookAccess === 'printdisabled' && iaId) {
+    readingCapability = 'BORROW_REQUIRED';
+    borrowUrl = `https://archive.org/details/${encodeURIComponent(iaId)}`;
+  } else if (hasFulltext && iaId) {
+    readingCapability = 'EXTERNAL_READER';
+    externalReaderUrl = `https://archive.org/embed/${encodeURIComponent(iaId)}`;
+  }
+
+  const availability: BookAvailability = readingCapability === 'FULL_TEXT' ? 'full-text' : 'metadata-only';
 
   return {
     id: stripOpenLibraryPrefix(key),
@@ -96,7 +130,12 @@ export const normalizeOpenLibrarySearchDoc = (doc: OpenLibrarySearchDoc): Book |
     subjects: asStrings(raw.subject),
     source: 'openlibrary',
     sourceUrl: getOpenLibrarySourceUrl(key),
-    availability: 'metadata-only',
+    availability,
+    readingCapability,
+    iaId,
+    ebookAccess,
+    borrowUrl,
+    externalReaderUrl,
   };
 };
 
@@ -107,6 +146,19 @@ export const normalizeOpenLibrarySubjectWork = (work: OpenLibrarySubjectWork): B
   const key = raw.key;
   const coverId = typeof raw.cover_id === 'number' ? raw.cover_id : undefined;
   const authors = Array.isArray(raw.authors) ? raw.authors : [];
+  const iaId = typeof raw.ia === 'string' && raw.ia.trim() ? raw.ia.trim() : undefined;
+  const hasFulltext = Boolean(raw.has_fulltext);
+
+  let readingCapability: ReadingCapability = 'METADATA_ONLY';
+  let externalReaderUrl: string | undefined;
+
+  if (iaId && hasFulltext) {
+    readingCapability = 'FULL_TEXT';
+    externalReaderUrl = `https://archive.org/embed/${encodeURIComponent(iaId)}`;
+  } else if (iaId) {
+    readingCapability = 'EXTERNAL_READER';
+    externalReaderUrl = `https://archive.org/embed/${encodeURIComponent(iaId)}`;
+  }
 
   return {
     id: stripOpenLibraryPrefix(key),
@@ -125,7 +177,10 @@ export const normalizeOpenLibrarySubjectWork = (work: OpenLibrarySubjectWork): B
     subjects: asStrings(raw.subjects ?? raw.subject),
     source: 'openlibrary',
     sourceUrl: getOpenLibrarySourceUrl(key),
-    availability: 'metadata-only',
+    availability: readingCapability === 'FULL_TEXT' ? 'full-text' : 'metadata-only',
+    readingCapability,
+    iaId,
+    externalReaderUrl,
   };
 };
 
@@ -141,6 +196,8 @@ export const normalizeOpenLibraryWork = (work: OpenLibraryWorkResponse, id: stri
   const covers = Array.isArray(raw.covers) ? raw.covers : [];
   const cover = covers.find((value): value is number => typeof value === 'number');
   const key = typeof raw.key === 'string' ? raw.key : `/works/${id}`;
+  const iaList = asStrings(raw.ia);
+  const iaId = iaList[0];
 
   return {
     id,
@@ -156,6 +213,9 @@ export const normalizeOpenLibraryWork = (work: OpenLibraryWorkResponse, id: stri
     source: 'openlibrary',
     sourceUrl: getOpenLibrarySourceUrl(key),
     availability: 'metadata-only',
+    readingCapability: iaId ? 'EXTERNAL_READER' : 'METADATA_ONLY',
+    iaId,
+    externalReaderUrl: iaId ? `https://archive.org/embed/${encodeURIComponent(iaId)}` : undefined,
     description,
   };
 };

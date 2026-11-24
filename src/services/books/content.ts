@@ -1,13 +1,13 @@
-import type { Book } from '../../types/book';
+import type { Book, Chapter } from '../../types/book';
 import { getBookOffline, saveBookOffline } from '../offlineStorage';
 import { fetchGutendexSearch } from './gutendex';
 import { normalizeGutendexBook } from './normalize';
 
-const TOTAL_RETRIEVAL_TIMEOUT_MS = 9_000;
-const SAME_ORIGIN_TIMEOUT_MS = 6_000;
-const FALLBACK_TIMEOUT_MS = 3_500;
-const MAX_TEXT_LENGTH = 1_200_000;
-const MIN_VALID_TEXT_LENGTH = 400;
+const TOTAL_RETRIEVAL_TIMEOUT_MS = 10_000;
+const SAME_ORIGIN_TIMEOUT_MS = 6_500;
+const FALLBACK_TIMEOUT_MS = 4_000;
+const MAX_TEXT_LENGTH = 1_500_000;
+const MIN_VALID_TEXT_LENGTH = 300;
 
 const GUTENBERG_HOSTS = new Set(['www.gutenberg.org', 'gutenberg.org']);
 const SAME_ORIGIN_PROXY_PREFIX = '/api/gutenberg';
@@ -30,7 +30,6 @@ export const toSameOriginProxyUrl = (rawUrl: string): string | null => {
     if (!GUTENBERG_HOSTS.has(parsed.hostname)) return null;
     // Check safe paths to avoid acting as an open proxy
     if (!SAFE_GUTENBERG_PATH_REGEX.test(parsed.pathname)) {
-      // If not strictly matching regex, verify at least that it's a txt endpoint
       if (!parsed.pathname.endsWith('.txt') && !parsed.pathname.endsWith('.txt.utf-8')) {
         return null;
       }
@@ -69,7 +68,117 @@ export const stripGutenbergBoilerplate = (text: string): string => {
 };
 
 /**
- * Fetch plain text with a deadline that covers headers AND body parsing.
+ * Extracts structured chapters from plain text with headings and offsets.
+ * Preserves reading order and builds a fallback chunked structure for long unformatted texts.
+ */
+export const extractChapters = (text: string): Chapter[] => {
+  if (!text || text.length < 500) {
+    const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+    return [{ id: 'ch-1', title: 'Complete Text', startIndex: 0, endIndex: text.length, wordCount: words }];
+  }
+
+  // Regex pattern matching chapter headings on their own line
+  const chapterPattern = /(?:^|\r?\n)\s*((?:(?:CHAPTER|Chapter|BOOK|Book|PART|Part|ACT|Act|SCENE|Scene|SECTION|Section|PROLOGUE|Prologue|EPILOGUE|Epilogue)\b[^\r\n]*)|(?:[IVXLCDM]{1,8}\.[^\r\n]*))\s*(?=\r?\n|$)/g;
+
+  const matches: Array<{ title: string; index: number }> = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = chapterPattern.exec(text)) !== null) {
+    const rawHeading = match[1]?.trim();
+    if (rawHeading && rawHeading.length <= 90) {
+      if (!/project gutenberg|license|trademark|warranty/i.test(rawHeading)) {
+        const offsetInMatch = match[0].indexOf(rawHeading);
+        matches.push({
+          title: rawHeading.replace(/\s+/g, ' '),
+          index: match.index + (offsetInMatch >= 0 ? offsetInMatch : 0),
+        });
+      }
+    }
+  }
+
+  // Filter out clustered items (e.g., Table of Contents list near the beginning)
+  const validChapters: Array<{ title: string; index: number }> = [];
+  for (let i = 0; i < matches.length; i++) {
+    const curr = matches[i];
+    const next = matches[i + 1];
+    if (next && (next.index - curr.index < 80)) {
+      continue;
+    }
+    validChapters.push(curr);
+  }
+
+  // If we found at least 2 distinct chapter markers
+  if (validChapters.length >= 2) {
+    const chapters: Chapter[] = [];
+    for (let i = 0; i < validChapters.length; i++) {
+      const start = validChapters[i].index;
+      const end = i + 1 < validChapters.length ? validChapters[i + 1].index : text.length;
+      const chapterText = text.slice(start, end);
+      const wordCount = chapterText.split(/\s+/).filter(Boolean).length;
+
+      chapters.push({
+        id: `ch-${i + 1}`,
+        title: validChapters[i].title,
+        startIndex: start,
+        endIndex: end,
+        wordCount,
+      });
+    }
+
+    // If there is substantial text before the first chapter, add an Introduction/Opening
+    if (validChapters[0].index > 600) {
+      const introText = text.slice(0, validChapters[0].index);
+      const wordCount = introText.split(/\s+/).filter(Boolean).length;
+      chapters.unshift({
+        id: 'ch-intro',
+        title: 'Introduction / Opening',
+        startIndex: 0,
+        endIndex: validChapters[0].index,
+        wordCount,
+      });
+    }
+
+    return chapters;
+  }
+
+  // Fallback chunking: For books without explicit chapter labels, split into readable sections (~2500 words)
+  // to avoid DOM freezing and performance issues when rendering 500k+ word texts
+  const words = text.split(/(\s+)/);
+  const CHUNK_WORDS = 2500;
+  const chapters: Chapter[] = [];
+  let currentChunkWords = 0;
+  let currentStartIndex = 0;
+  let currentLength = 0;
+  let sectionIndex = 1;
+
+  for (let i = 0; i < words.length; i++) {
+    const token = words[i];
+    currentLength += token.length;
+    if (token.trim()) currentChunkWords++;
+
+    if (currentChunkWords >= CHUNK_WORDS || i === words.length - 1) {
+      const endIndex = currentStartIndex + currentLength;
+      chapters.push({
+        id: `sec-${sectionIndex}`,
+        title: `Section ${sectionIndex}`,
+        startIndex: currentStartIndex,
+        endIndex,
+        wordCount: currentChunkWords,
+      });
+      sectionIndex++;
+      currentStartIndex = endIndex;
+      currentLength = 0;
+      currentChunkWords = 0;
+    }
+  }
+
+  return chapters.length > 0
+    ? chapters
+    : [{ id: 'ch-full', title: 'Complete Text', startIndex: 0, endIndex: text.length, wordCount: words.length }];
+};
+
+/**
+ * Fetch plain text with proper encoding handling (ISO-8859-1 vs UTF-8) and bounded deadline.
  */
 const fetchPlainText = async (
   url: string,
@@ -95,7 +204,19 @@ const fetchPlainText = async (
 
     if (!response.ok) throw new Error(`Text source returned HTTP ${response.status}.`);
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-    const text = await response.text();
+
+    // Handle encoding safely
+    const buffer = await response.arrayBuffer();
+    let text: string;
+    if (contentType.includes('iso-8859-1') || contentType.includes('latin1')) {
+      text = new TextDecoder('iso-8859-1').decode(buffer);
+    } else {
+      try {
+        text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+      } catch {
+        text = new TextDecoder('iso-8859-1').decode(buffer);
+      }
+    }
 
     if (contentType.includes('text/html') || !isUsableText(text)) {
       throw new Error('The source did not return readable book text.');
@@ -188,7 +309,7 @@ export const findGutenbergTwin = async (book: Book, signal?: AbortSignal): Promi
     const response = await fetchGutendexSearch(query, signal);
     const candidates = (Array.isArray(response.results) ? response.results : [])
       .map(normalizeGutendexBook)
-      .filter(b => b.availability === 'full-text');
+      .filter(b => b.readingCapability === 'FULL_TEXT');
 
     const cleanTitle = normalizeSearchToken(book.title);
     if (!cleanTitle) return null;
@@ -221,7 +342,20 @@ export const findGutenbergTwin = async (book: Book, signal?: AbortSignal): Promi
 };
 
 /**
- * IndexedDB cache → same-origin Netlify proxy → parallel short-timeout fallback gateways.
+ * Download text from Internet Archive OCR djvu.txt endpoint.
+ */
+const downloadInternetArchiveText = async (iaId: string, signal?: AbortSignal): Promise<string> => {
+  const directUrl = `https://archive.org/stream/${encodeURIComponent(iaId)}/${encodeURIComponent(iaId)}_djvu.txt`;
+  const urls = [
+    directUrl,
+    ...PUBLIC_PROXIES.map(p => p(directUrl)),
+  ];
+
+  return fetchFirstValid(urls, signal, SAME_ORIGIN_TIMEOUT_MS);
+};
+
+/**
+ * IndexedDB cache → direct / proxy retrieval → fallback gateways.
  * Bounded by a total deadline to prevent hanging.
  */
 export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<string> => {
@@ -249,27 +383,48 @@ export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<
     }
 
     // 2. Resolve text source
-    let textSource: Book | null = book;
-    if (book.source !== 'gutendex') {
-      textSource = await findGutenbergTwin(book, overallController.signal);
-      if (!textSource) {
+    let text = '';
+
+    if (book.source === 'gutendex') {
+      const raw = await downloadGutenbergText(book, overallController.signal);
+      text = stripGutenbergBoilerplate(raw);
+    } else if (book.source === 'openlibrary') {
+      // First try Internet Archive OCR text if iaId is present
+      if (book.iaId && (book.readingCapability === 'FULL_TEXT' || book.ebookAccess === 'public')) {
+        try {
+          const rawIa = await downloadInternetArchiveText(book.iaId, overallController.signal);
+          if (isUsableText(rawIa)) {
+            text = rawIa.trim();
+          }
+        } catch {
+          // IA direct text failed, try Gutenberg twin
+        }
+      }
+
+      // If no text yet, try finding a Gutenberg twin
+      if (!text) {
+        const twin = await findGutenbergTwin(book, overallController.signal);
+        if (twin) {
+          const raw = await downloadGutenbergText(twin, overallController.signal);
+          text = stripGutenbergBoilerplate(raw);
+        }
+      }
+
+      if (!text) {
         throw new Error('FULL_TEXT_UNAVAILABLE');
       }
     }
 
-    // 3. Download text from verified Gutenberg endpoints
-    const raw = await downloadGutenbergText(textSource, overallController.signal);
-    const cleaned = stripGutenbergBoilerplate(raw);
-    const text = cleaned.length > MAX_TEXT_LENGTH ? cleaned.slice(0, MAX_TEXT_LENGTH) : cleaned;
+    const trimmedText = text.length > MAX_TEXT_LENGTH ? text.slice(0, MAX_TEXT_LENGTH) : text;
 
-    // 4. Cache valid full text in IndexedDB
+    // 3. Cache valid full text in IndexedDB
     try {
-      await saveBookOffline(book.id, book.source, text);
+      await saveBookOffline(book.id, book.source, trimmedText);
     } catch (error) {
       console.warn('Failed to save book text offline:', error);
     }
 
-    return text;
+    return trimmedText;
   } catch (err) {
     if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
     if (err instanceof Error && err.message === 'FULL_TEXT_UNAVAILABLE') {
