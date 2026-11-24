@@ -5,7 +5,7 @@
 BlueLeaf Books is a calm, accessible, privacy-first web platform for discovering and reading legally accessible public-domain classics and open library collections. Built with React 18, TypeScript, Tailwind CSS, and Vite.
 
 Live deployment: [https://sage-khapse-0934ef.netlify.app/](https://sage-khapse-0934ef.netlify.app/)  
-Current working branch: `blueleaf-final-polish`
+Primary branch: `main`
 
 ---
 
