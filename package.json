@@ -9,7 +9,9 @@
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:preview": "netlify deploy --dir=dist",
+    "deploy:prod": "netlify deploy --dir=dist --prod"
   },
   "dependencies": {
     "framer-motion": "^12.42.2",
