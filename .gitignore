@@ -27,8 +27,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Test coverage
+# Test coverage & e2e results
 coverage/
+test-results/
+playwright-report/
 
 # OS and Editor files
 .DS_Store

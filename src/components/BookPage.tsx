@@ -322,7 +322,11 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
 
   const saved = isBookSaved(book);
   const hasInAppFullText = !isTextUnavailable && content.length > 0;
-  const hasExternalEmbed = book.externalReaderUrl && (book.readingCapability === 'EXTERNAL_READER' || book.readingCapability === 'FULL_TEXT');
+  const hasExternalEmbed = Boolean(book.externalReaderUrl) && (
+    book.readingCapability === 'EXTERNAL_READER' ||
+    book.readingCapability === 'FULL_TEXT' ||
+    book.readingCapability === 'OFFICIAL_EMBED'
+  );
 
   return (
     <main className={`min-h-screen pt-20 ${tClasses.bg}`}>
@@ -590,7 +594,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
 
       {/* Main Container */}
       <article className="relative z-0 mx-auto grid max-w-7xl gap-8 px-4 py-8 sm:px-6 lg:grid-cols-[18rem_1fr]">
-        <aside className="space-y-6">
+        <aside className="order-2 lg:order-1 space-y-6">
           <div className={`rounded-2xl p-5 ${tClasses.panel} shadow-sm`}>
             <img
               src={getBookCover(book)}
@@ -688,7 +692,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
         </aside>
 
         {/* Reader or Provider View */}
-        <section aria-labelledby="reader-heading" className="relative">
+        <section aria-labelledby="reader-heading" className="order-1 lg:order-2 relative">
           <h2 id="reader-heading" className="sr-only">Reader content</h2>
 
           {hasInAppFullText ? (
@@ -751,11 +755,11 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
             <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
                 <div>
-                  <h3 className="text-base font-bold text-slate-900">Official Internet Archive Reader</h3>
-                  <p className="text-xs text-slate-500">Public-domain digitized edition embedded directly.</p>
+                  <h3 className="text-base font-bold text-slate-900">Official Digitized BookReader</h3>
+                  <p className="text-xs text-slate-500">Interactive scanned pages provided directly by Internet Archive.</p>
                 </div>
                 <a
-                  href={`https://archive.org/details/${encodeURIComponent(book.iaId || '')}`}
+                  href={`https://archive.org/details/${encodeURIComponent(book.iaId || book.id || '')}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="focus-ring inline-flex items-center gap-1.5 text-xs font-semibold text-blue-700 hover:text-blue-900"
@@ -763,13 +767,52 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                   Open on Archive.org <ExternalLink className="h-3.5 w-3.5" />
                 </a>
               </div>
-              <div className="aspect-[4/3] w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-100 sm:aspect-[16/10]">
+              <div className="h-[75vh] min-h-[520px] w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-950 shadow-inner">
                 <iframe
                   src={book.externalReaderUrl}
-                  title={`Internet Archive reader for ${book.title}`}
+                  title={`Internet Archive interactive BookReader for ${book.title}`}
                   className="h-full w-full border-0"
                   allowFullScreen
+                  allow="fullscreen"
                 />
+              </div>
+            </div>
+          ) : isTextUnavailable && book.readingCapability === 'FULL_TEXT' ? (
+            /* Explicit Content Retrieval Failure State */
+            <div className="rounded-3xl border border-amber-200 bg-amber-50/70 p-8 text-amber-950 shadow-sm sm:p-10">
+              <div className="max-w-2xl">
+                <span className="inline-flex rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-900">
+                  Content Retrieval Notice
+                </span>
+                <h2 className="mt-3 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+                  {book.title}
+                </h2>
+                <p className="mt-1 text-base text-slate-600">{getBookAuthors(book)}</p>
+
+                <div className="my-6 rounded-2xl border border-amber-200 bg-white p-5 text-sm">
+                  <p className="font-semibold text-amber-900">Digital text could not be loaded at this time</p>
+                  <p className="mt-1 text-slate-700 leading-relaxed">
+                    The upstream provider experienced a temporary timeout or restriction. You can retry loading or view the source directly.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 border-t border-amber-200/60 pt-6">
+                  <button
+                    type="button"
+                    onClick={() => setRetryKey(k => k + 1)}
+                    className="focus-ring inline-flex items-center gap-2 rounded-full bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-800"
+                  >
+                    <RefreshCw className="h-4 w-4" aria-hidden="true" /> Retry loading
+                  </button>
+                  <a
+                    href={book.sourceUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="focus-ring inline-flex items-center gap-2 rounded-full border border-slate-300 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    View on provider <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                  </a>
+                </div>
               </div>
             </div>
           ) : book.readingCapability === 'BORROW_REQUIRED' ? (

@@ -25,5 +25,6 @@ export const fetchGutendexBook = (id: string, signal?: AbortSignal): Promise<Gut
   // Trailing slash matters: Gutendex redirects /books/<id> to /books/<id>/.
   fetchJson<GutendexBook>(`${GUTENDEX_BASE_URL}/${encodeURIComponent(id)}/`, {
     signal,
+    timeoutMs: 3_000,
     cacheMs: 10 * 60_000,
   });

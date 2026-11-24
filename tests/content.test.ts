@@ -12,6 +12,9 @@ describe('toSameOriginProxyUrl security allowlist', () => {
 
     const validUrl2 = 'https://gutenberg.org/ebooks/84.txt.utf-8';
     expect(toSameOriginProxyUrl(validUrl2)).toBe('/api/gutenberg/ebooks/84.txt.utf-8');
+
+    const mirrorUrl = 'https://gutenberg.pglaf.org/cache/epub/1342/pg1342.txt';
+    expect(toSameOriginProxyUrl(mirrorUrl)).toBe('/api/gutenberg/cache/epub/1342/pg1342.txt');
   });
 
   it('rejects non-Gutenberg hosts to prevent acting as an open proxy', () => {
@@ -98,5 +101,25 @@ They were indeed a queer-looking party that assembled on the bank: the birds wit
     expect(chapters[0]?.title).toBe('Section 1');
     expect(chapters[1]?.title).toBe('Section 2');
     expect(chapters[0]?.wordCount).toBeGreaterThanOrEqual(2500);
+  });
+});
+
+describe('Standard Ebooks HTML extraction', () => {
+  it('strips headers, styles, and tags while preserving chapter titles and content', async () => {
+    const { stripStandardEbooksHtml } = await import('../src/services/books/adapters/standardEbooksAdapter');
+    const rawHtml = `
+      <header><nav>Navigation menu</nav></header>
+      <section id="chapter-1">
+        <h2>Chapter 1</h2>
+        <p>It is a truth universally acknowledged, that a single man in possession of a good fortune, must be in want of a wife.</p>
+        <p>However little known the feelings or views of such a man may be on his first entering a neighbourhood...</p>
+      </section>
+    `;
+
+    const clean = stripStandardEbooksHtml(rawHtml);
+    expect(clean).toContain('Chapter 1');
+    expect(clean).toContain('It is a truth universally acknowledged');
+    expect(clean).not.toContain('<p>');
+    expect(clean).not.toContain('Navigation menu');
   });
 });

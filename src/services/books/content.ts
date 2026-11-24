@@ -3,13 +3,14 @@ import { getBookOffline, saveBookOffline } from '../offlineStorage';
 import { fetchGutendexSearch } from './gutendex';
 import { normalizeGutendexBook } from './normalize';
 import { wikisourceAdapter } from './adapters/wikisourceAdapter';
+import { standardEbooksAdapter } from './adapters/standardEbooksAdapter';
 
-const TOTAL_RETRIEVAL_TIMEOUT_MS = 10_000;
-const SAME_ORIGIN_TIMEOUT_MS = 7_000;
+const TOTAL_RETRIEVAL_TIMEOUT_MS = 20_000;
+const SAME_ORIGIN_TIMEOUT_MS = 12_000;
 const MAX_TEXT_LENGTH = 1_500_000;
 const MIN_VALID_TEXT_LENGTH = 150;
 
-const GUTENBERG_HOSTS = new Set(['www.gutenberg.org', 'gutenberg.org']);
+const GUTENBERG_HOSTS = new Set(['www.gutenberg.org', 'gutenberg.org', 'gutenberg.pglaf.org']);
 const SAME_ORIGIN_PROXY_PREFIX = '/api/gutenberg';
 
 const SAFE_GUTENBERG_PATH_REGEX = /^\/(cache\/epub\/\d+\/pg\d+(\.txt|\.txt\.utf-8)?|ebooks\/\d+\.txt\.utf-8|files\/\d+\/.*\.txt)$/i;
@@ -223,11 +224,17 @@ const fetchPlainText = async (
 
 const getCandidateTextUrls = (book: Book): string[] => {
   const candidates: string[] = [];
-  const listed = book.formats.plainText ? forceHttps(book.formats.plainText) : null;
-  if (listed) candidates.push(listed);
+
+  // 1. Primary official verified cache paths on PGLAF mirror and main host
+  const mirrorPg = `https://gutenberg.pglaf.org/cache/epub/${encodeURIComponent(book.id)}/pg${encodeURIComponent(book.id)}.txt`;
+  candidates.push(mirrorPg);
 
   const defaultPg = `https://www.gutenberg.org/cache/epub/${encodeURIComponent(book.id)}/pg${encodeURIComponent(book.id)}.txt`;
-  if (!candidates.includes(defaultPg)) candidates.push(defaultPg);
+  candidates.push(defaultPg);
+
+  // 2. Format plainText URL from metadata record (if different)
+  const listed = book.formats.plainText ? forceHttps(book.formats.plainText) : null;
+  if (listed && !candidates.includes(listed)) candidates.push(listed);
 
   return candidates;
 };
@@ -306,7 +313,7 @@ export const findGutenbergTwin = async (book: Book, signal?: AbortSignal): Promi
  * Download text from Internet Archive direct OCR djvu.txt endpoint.
  */
 const downloadInternetArchiveText = async (iaId: string, signal?: AbortSignal): Promise<string> => {
-  const directUrl = `https://archive.org/stream/${encodeURIComponent(iaId)}/${encodeURIComponent(iaId)}_djvu.txt`;
+  const directUrl = `https://archive.org/download/${encodeURIComponent(iaId)}/${encodeURIComponent(iaId)}_djvu.txt`;
   return fetchPlainText(directUrl, signal, SAME_ORIGIN_TIMEOUT_MS);
 };
 
@@ -346,6 +353,10 @@ export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<
         const rawIa = await downloadInternetArchiveText(iaId, overallController.signal);
         if (isUsableText(rawIa)) text = rawIa.trim();
       } catch {
+        // Direct OCR text download failed or item is scan-only
+      }
+
+      if (!text) {
         throw new Error('FULL_TEXT_UNAVAILABLE');
       }
     } else if (book.source === 'gutendex') {
@@ -373,11 +384,24 @@ export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<
         throw new Error('FULL_TEXT_UNAVAILABLE');
       }
     } else if (book.source === 'standardebooks') {
-      const twin = await findGutenbergTwin(book, overallController.signal);
-      if (twin) {
-        const raw = await downloadGutenbergText(twin, overallController.signal);
-        text = stripGutenbergBoilerplate(raw);
-      } else {
+      if (standardEbooksAdapter.getReadingContent) {
+        try {
+          const seText = await standardEbooksAdapter.getReadingContent(book, overallController.signal);
+          if (isUsableText(seText)) text = seText;
+        } catch {
+          // Standard Ebooks direct fetch failed, try twin search
+        }
+      }
+
+      if (!text) {
+        const twin = await findGutenbergTwin(book, overallController.signal);
+        if (twin) {
+          const raw = await downloadGutenbergText(twin, overallController.signal);
+          text = stripGutenbergBoilerplate(raw);
+        }
+      }
+
+      if (!text) {
         throw new Error('FULL_TEXT_UNAVAILABLE');
       }
     }

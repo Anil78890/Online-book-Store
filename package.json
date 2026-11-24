@@ -11,6 +11,8 @@
     "test": "vitest run",
     "preview": "vite preview",
     "diagnose:providers": "node scripts/diagnose-providers.mjs",
+    "diagnose:reading": "node scripts/diagnose-reading.mjs",
+    "test:e2e": "playwright test",
     "deploy:preview": "netlify deploy --dir=dist",
     "deploy:prod": "netlify deploy --dir=dist --prod"
   },
@@ -24,6 +26,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",
+    "@playwright/test": "^1.65.1",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

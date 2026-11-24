@@ -142,8 +142,41 @@ export const wikisourceAdapter: ProviderAdapter = {
     const url = `${WIKISOURCE_API_BASE}?action=parse&page=${encodeURIComponent(pageTitle)}&prop=text&format=json&origin=*`;
     const data = await fetchJson<WikiParseResponse>(url, { signal, cacheMs: 300_000 });
 
-    const html = data.parse?.text?.['*'];
+    let html = data.parse?.text?.['*'];
     if (!html) throw new Error('No readable text returned from Wikisource.');
+
+    // If this is a portal, version index, or disambiguation page, follow the first major work edition link
+    if (
+      html.includes('Versions of') ||
+      html.includes('mw-disambig') ||
+      html.includes('similar ws-noexport') ||
+      html.includes('portal')
+    ) {
+      // Find candidate work edition links on the page (excluding meta/help links)
+      const matches = Array.from(html.matchAll(/href="\/wiki\/([^"#:]+)"/g));
+      const validLinks = matches
+        .map(m => decodeURIComponent(m[1] || ''))
+        .filter(link => {
+          if (!link) return false;
+          if (link.startsWith('Special:') || link.startsWith('Help:') || link.startsWith('Wikisource:')) return false;
+          if (link === pageTitle || link.toLowerCase().includes('disambig')) return false;
+          return true;
+        });
+
+      for (const targetLink of validLinks.slice(0, 3)) {
+        try {
+          const subUrl = `${WIKISOURCE_API_BASE}?action=parse&page=${encodeURIComponent(targetLink)}&prop=text&format=json&origin=*`;
+          const subData = await fetchJson<WikiParseResponse>(subUrl, { signal, cacheMs: 300_000 });
+          const subHtml = subData.parse?.text?.['*'];
+          if (subHtml && subHtml.length > 500) {
+            html = subHtml;
+            break;
+          }
+        } catch {
+          // continue to next link candidate
+        }
+      }
+    }
 
     const clean = stripHtmlToPlainText(html);
     if (!clean || clean.length < 100) throw new Error('Wikisource page contained no book text.');

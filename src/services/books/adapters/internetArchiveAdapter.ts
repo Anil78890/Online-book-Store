@@ -56,7 +56,7 @@ const normalizeIaDoc = (doc: IaDoc): Book | null => {
     authors,
     formats: {
       image: `https://archive.org/services/img/${encodeURIComponent(id)}`,
-      plainText: `https://archive.org/stream/${encodeURIComponent(id)}/${encodeURIComponent(id)}_djvu.txt`,
+      plainText: `https://archive.org/download/${encodeURIComponent(id)}/${encodeURIComponent(id)}_djvu.txt`,
     },
     languages: [],
     downloadCount: 0,
@@ -136,7 +136,7 @@ export const internetArchiveAdapter: ProviderAdapter = {
       authors: [{ name: creator }],
       formats: {
         image: `https://archive.org/services/img/${encodeURIComponent(id)}`,
-        plainText: hasDjvuText ? `https://archive.org/stream/${encodeURIComponent(id)}/${encodeURIComponent(id)}_djvu.txt` : undefined,
+        plainText: hasDjvuText ? `https://archive.org/download/${encodeURIComponent(id)}/${encodeURIComponent(id)}_djvu.txt` : undefined,
       },
       languages: [],
       downloadCount: 0,

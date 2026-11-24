@@ -14,6 +14,33 @@ let cachedEntries: StandardEbookEntry[] | null = null;
 let cacheTimestamp = 0;
 const CACHE_TTL_MS = 60 * 60_000; // 1 hour
 
+export const stripStandardEbooksHtml = (html: string): string => {
+  return html
+    // Remove scripts and styles
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    // Remove header navigation block
+    .replace(/<header\b[^>]*>[\s\S]*?<\/header>/gi, '')
+    // Replace headings with double newlines and marker
+    .replace(/<h[1-6][^>]*>(.*?)<\/h[1-6]>/gi, '\n\n$1\n\n')
+    // Replace paragraph and break tags
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    // Remove all remaining HTML tags
+    .replace(/<[^>]+>/g, '')
+    // Decode common entities
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    // Clean redundant whitespace
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
 const parseAtomFeed = (xml: string): StandardEbookEntry[] => {
   const entries: StandardEbookEntry[] = [];
   const rawEntries = xml.split('<entry>');
@@ -148,5 +175,21 @@ export const standardEbooksAdapter: ProviderAdapter = {
         attributionText: 'Standard Ebooks public domain edition.',
       },
     };
+  },
+
+  async getReadingContent(book: Book, signal?: AbortSignal): Promise<string> {
+    const slug = decodeURIComponent(book.id);
+    const contentUrl = book.formats.html || `https://standardebooks.org/ebooks/${slug}/text/single-page`;
+    const res = await fetch(contentUrl, {
+      signal,
+      headers: { Accept: 'text/html, application/xhtml+xml, text/plain;q=0.9' },
+    });
+    if (!res.ok) throw new Error(`Standard Ebooks returned HTTP ${res.status}`);
+    const html = await res.text();
+    const clean = stripStandardEbooksHtml(html);
+    if (!clean || clean.length < 500) {
+      throw new Error('Standard Ebooks content was insufficient.');
+    }
+    return clean;
   },
 };

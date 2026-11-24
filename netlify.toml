@@ -6,7 +6,7 @@
 # Must stay ABOVE the SPA catch-all: Netlify applies the first matching rule.
 [[redirects]]
   from = "/api/gutenberg/*"
-  to = "https://www.gutenberg.org/:splat"
+  to = "https://gutenberg.pglaf.org/:splat"
   status = 200
   force = true
 
