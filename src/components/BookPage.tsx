@@ -703,6 +703,13 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                 onScroll={updateProgress}
                 onMouseUp={handleSelection}
                 onTouchEnd={handleSelection}
+                onCopy={(e) => {
+                  const sel = window.getSelection()?.toString();
+                  if (sel && sel.length > 120) {
+                    e.clipboardData.setData('text/plain', `${sel.trim()}\n\n— Excerpt from BlueLeaf Books (https://sage-khapse-0934ef.netlify.app)`);
+                    e.preventDefault();
+                  }
+                }}
                 className={`max-h-[75vh] overflow-y-auto rounded-3xl p-6 shadow-sm sm:p-10 ${tClasses.panel} relative focus:outline-none`}
                 style={{ fontSize, fontFamily, lineHeight, letterSpacing }}
                 tabIndex={0}
