@@ -42,7 +42,11 @@ interface BookPageProps {
 }
 
 const isBookSource = (value: string | undefined): value is BookSource =>
-  value === 'gutendex' || value === 'openlibrary';
+  value === 'gutendex' ||
+  value === 'openlibrary' ||
+  value === 'internetarchive' ||
+  value === 'wikisource' ||
+  value === 'standardebooks';
 
 const readStringSetting = (key: string, fallback: string): string => {
   return localStorage.getItem(key) || fallback;
@@ -594,7 +598,7 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
               className="mx-auto mb-4 w-44 rounded-xl shadow-md"
             />
             <p className="text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-400">
-              {book.source === 'gutendex' ? 'Project Gutenberg' : 'Open Library'}
+              {book.sourceAttribution || (book.source === 'gutendex' ? 'Project Gutenberg' : book.source === 'internetarchive' ? 'Internet Archive' : book.source === 'wikisource' ? 'Wikisource' : book.source === 'standardebooks' ? 'Standard Ebooks' : 'Open Library')}
             </p>
             <h1 className="mt-2 text-xl font-bold leading-snug">{book.title}</h1>
             <p className={`mt-1 text-sm ${theme !== 'light' ? 'text-gray-300' : 'text-gray-600'}`}>
@@ -634,6 +638,27 @@ const BookPage = ({ onSaveBook, isBookSaved }: BookPageProps) => {
                 {saved ? <Check className="h-4 w-4" aria-hidden="true" /> : <BookmarkPlus className="h-4 w-4" aria-hidden="true" />}
                 {saved ? 'Saved in library' : 'Save to Library'}
               </button>
+            </div>
+
+            {/* Source Transparency & Rights */}
+            <div className={`mt-4 border-t pt-3 text-xs ${theme !== 'light' ? 'border-gray-800 text-gray-400' : 'border-gray-100 text-gray-500'}`}>
+              <p className="font-semibold text-gray-800 dark:text-gray-200">
+                Source: {book.sourceAttribution || book.source}
+              </p>
+              {book.rights?.licenseName && (
+                <p className="mt-1">Rights: {book.rights.licenseName}</p>
+              )}
+              {book.rights?.attributionText && (
+                <p className="mt-1 italic">{book.rights.attributionText}</p>
+              )}
+              <a
+                href={book.sourceUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="focus-ring mt-2 inline-flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-800 dark:text-blue-400"
+              >
+                View on provider <ExternalLink className="h-3 w-3" />
+              </a>
             </div>
           </div>
 

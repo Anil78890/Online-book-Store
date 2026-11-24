@@ -1,30 +1,9 @@
-import type {
-  Book,
-  BookSource,
-  GutendexBook,
-  OpenLibrarySearchDoc,
-  OpenLibrarySubjectWork,
-  ReadingCapability,
-} from '../../types/book';
-import {
-  fetchGutendexBook,
-  fetchGutendexCategory,
-  fetchGutendexPopular,
-  fetchGutendexSearch,
-} from './gutendex';
-import {
-  fetchOpenLibrarySearch,
-  fetchOpenLibrarySubject,
-  fetchOpenLibraryWork,
-} from './openLibrary';
-import {
-  normalizeGutendexBook,
-  normalizeOpenLibrarySearchDoc,
-  normalizeOpenLibrarySubjectWork,
-  normalizeOpenLibraryWork,
-} from './normalize';
+import type { Book, BookSource, ReadingCapability } from '../../types/book';
+import { getAdapter, getAllAdapters } from './adapters/registry';
+import { GENRE_TAXONOMY, getGenreById, getGenreQueryForProvider } from './genres';
 export { getBookContent, stripGutenbergBoilerplate, extractChapters } from './content';
 export { clearBookApiCache } from './http';
+export { GENRE_TAXONOMY, getGenreById };
 
 const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === 'AbortError';
@@ -40,11 +19,12 @@ const getBookDedupeKey = (book: Book): string => {
 
 const CAPABILITY_WEIGHT: Record<ReadingCapability, number> = {
   FULL_TEXT: 6,
-  EXTERNAL_READER: 5,
-  PREVIEW: 4,
-  BORROW_REQUIRED: 3,
-  METADATA_ONLY: 2,
-  UNAVAILABLE: 1,
+  OFFICIAL_EMBED: 5,
+  EXTERNAL_READER: 4,
+  PREVIEW: 3,
+  BORROW_REQUIRED: 2,
+  METADATA_ONLY: 1,
+  UNAVAILABLE: 0,
 };
 
 const getCapabilityWeight = (book: Book): number => {
@@ -57,7 +37,7 @@ const getCapabilityWeight = (book: Book): number => {
 /**
  * Deduplicate books:
  * 1. By source:id
- * 2. Cross-provider by title + author: prefer highest reading capability (FULL_TEXT > EXTERNAL_READER > BORROW_REQUIRED > METADATA_ONLY).
+ * 2. Cross-provider by title + author: prefer highest reading capability (FULL_TEXT > OFFICIAL_EMBED > EXTERNAL_READER > BORROW_REQUIRED > METADATA_ONLY).
  */
 export const uniqueBooks = (books: Book[]): Book[] => {
   const seenIds = new Set<string>();
@@ -86,34 +66,11 @@ export const uniqueBooks = (books: Book[]): Book[] => {
   return Array.from(byWork.values());
 };
 
-const asArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const getGutendexBooks = (value: unknown): GutendexBook[] =>
-  asArray<unknown>(value).filter(
-    (item): item is GutendexBook =>
-      isRecord(item) && typeof item.id === 'number' && Number.isFinite(item.id),
-  );
-
-const getOpenLibraryDocs = (value: unknown): OpenLibrarySearchDoc[] =>
-  asArray<unknown>(value).filter(
-    (item): item is OpenLibrarySearchDoc =>
-      isRecord(item) && typeof item.key === 'string' && typeof item.title === 'string',
-  );
-
-const getOpenLibraryWorks = (value: unknown): OpenLibrarySubjectWork[] =>
-  asArray<unknown>(value).filter(
-    (item): item is OpenLibrarySubjectWork =>
-      isRecord(item) && typeof item.key === 'string' && typeof item.title === 'string',
-  );
-
 type PartialBooksHandler = (books: Book[]) => void;
 
 /**
  * Return each provider's results as soon as they arrive instead of waiting for the
- * slowest provider. A provider failure does not discard results from the other one.
+ * slowest provider. A provider failure does not discard results from healthy sources.
  */
 export const settleBooks = async (
   tasks: Array<Promise<Book[]>>,
@@ -150,6 +107,9 @@ export const settleBooks = async (
   return uniqueBooks(collected.flat());
 };
 
+/**
+ * Search books across all supported legitimate providers.
+ */
 export const searchBooks = async (
   query: string,
   signal?: AbortSignal,
@@ -158,73 +118,58 @@ export const searchBooks = async (
   const trimmedQuery = query.trim();
   if (!trimmedQuery) return [];
 
-  return settleBooks(
-    [
-      fetchGutendexSearch(trimmedQuery, signal).then(data =>
-        getGutendexBooks(data.results).map(normalizeGutendexBook),
-      ),
-      fetchOpenLibrarySearch(trimmedQuery, signal).then(data =>
-        getOpenLibraryDocs(data.docs)
-          .map(normalizeOpenLibrarySearchDoc)
-          .filter((book): book is Book => Boolean(book)),
-      ),
-    ],
-    signal,
-    onPartial,
+  const adapters = getAllAdapters();
+  const tasks = adapters.map(adapter =>
+    adapter.search(trimmedQuery, { signal, limit: 12 }),
   );
+
+  return settleBooks(tasks, signal, onPartial);
 };
 
+/**
+ * Popular reader favourites from public domain collections.
+ */
 export const getPopularBooks = async (
   signal?: AbortSignal,
   onPartial?: PartialBooksHandler,
-): Promise<Book[]> =>
-  settleBooks(
-    [
-      fetchGutendexPopular(signal).then(data =>
-        getGutendexBooks(data.results)
-          .slice(0, 16)
-          .map(normalizeGutendexBook),
-      ),
-      fetchOpenLibrarySubject('classic_literature', signal).then(data =>
-        getOpenLibraryWorks(data.works)
-          .slice(0, 8)
-          .map(normalizeOpenLibrarySubjectWork)
-          .filter((book): book is Book => Boolean(book)),
-      ),
-    ],
-    signal,
-    onPartial,
-  );
+): Promise<Book[]> => {
+  const adapters = getAllAdapters();
+  const tasks = adapters.map(adapter => {
+    if (adapter.browseSubject) {
+      return adapter.browseSubject('classic_literature', { signal, limit: 10 });
+    }
+    return adapter.search('classics', { signal, limit: 8 });
+  });
 
+  return settleBooks(tasks, signal, onPartial);
+};
+
+/**
+ * Browse books by genre across providers with provider-specific mapped vocabulary.
+ */
 export const getBooksByCategory = async (
-  category: string,
+  categoryId: string,
   signal?: AbortSignal,
   onPartial?: PartialBooksHandler,
 ): Promise<Book[]> => {
-  const normalizedCategory = category.trim() || 'fiction';
+  const adapters = getAllAdapters();
+  const tasks = adapters.map(adapter => {
+    const providerQuery = getGenreQueryForProvider(categoryId, adapter.source);
+    if (adapter.browseSubject) {
+      return adapter.browseSubject(providerQuery, { signal, limit: 10 });
+    }
+    return adapter.search(providerQuery, { signal, limit: 8 });
+  });
 
-  return settleBooks(
-    [
-      fetchGutendexCategory(normalizedCategory, signal).then(data =>
-        getGutendexBooks(data.results).map(normalizeGutendexBook),
-      ),
-      fetchOpenLibrarySubject(normalizedCategory.replace(/\s+/g, '_'), signal).then(data =>
-        getOpenLibraryWorks(data.works)
-          .map(normalizeOpenLibrarySubjectWork)
-          .filter((book): book is Book => Boolean(book)),
-      ),
-    ],
-    signal,
-    onPartial,
-  );
+  return settleBooks(tasks, signal, onPartial);
 };
 
+/**
+ * Fetch a single book from its native provider adapter.
+ */
 export const getBookById = async (source: BookSource, id: string, signal?: AbortSignal): Promise<Book> => {
-  if (source === 'gutendex') {
-    return normalizeGutendexBook(await fetchGutendexBook(id, signal));
-  }
-
-  return normalizeOpenLibraryWork(await fetchOpenLibraryWork(id, signal), id);
+  const adapter = getAdapter(source);
+  return adapter.getBook(id, signal);
 };
 
 export const getBookPath = (book: Book): string => `/book/${book.source}/${encodeURIComponent(book.id)}`;
@@ -239,6 +184,8 @@ export const getAvailabilityLabel = (book: Book): string => {
   switch (book.readingCapability) {
     case 'FULL_TEXT':
       return 'Free to read';
+    case 'OFFICIAL_EMBED':
+      return 'Official reader';
     case 'PREVIEW':
       return 'Preview available';
     case 'BORROW_REQUIRED':
@@ -257,13 +204,13 @@ export const getAvailabilityLabel = (book: Book): string => {
 export const getActionButtonLabel = (book: Book): string => {
   switch (book.readingCapability) {
     case 'FULL_TEXT':
+    case 'OFFICIAL_EMBED':
+    case 'EXTERNAL_READER':
       return 'Read';
     case 'PREVIEW':
       return 'Preview';
     case 'BORROW_REQUIRED':
       return 'Borrow';
-    case 'EXTERNAL_READER':
-      return 'Read';
     case 'METADATA_ONLY':
     case 'UNAVAILABLE':
     default:

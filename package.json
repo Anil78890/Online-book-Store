@@ -10,6 +10,7 @@
     "typecheck": "tsc -b",
     "test": "vitest run",
     "preview": "vite preview",
+    "diagnose:providers": "node scripts/diagnose-providers.mjs",
     "deploy:preview": "netlify deploy --dir=dist",
     "deploy:prod": "netlify deploy --dir=dist --prod"
   },

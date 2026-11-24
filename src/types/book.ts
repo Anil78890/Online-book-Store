@@ -1,4 +1,9 @@
-export type BookSource = 'gutendex' | 'openlibrary';
+export type BookSource =
+  | 'gutendex'
+  | 'openlibrary'
+  | 'internetarchive'
+  | 'wikisource'
+  | 'standardebooks';
 
 export type BookAvailability = 'full-text' | 'metadata-only';
 
@@ -6,9 +11,30 @@ export type ReadingCapability =
   | 'FULL_TEXT'
   | 'PREVIEW'
   | 'BORROW_REQUIRED'
+  | 'OFFICIAL_EMBED'
   | 'EXTERNAL_READER'
   | 'METADATA_ONLY'
   | 'UNAVAILABLE';
+
+export type ContentFormat = 'plain-text' | 'html' | 'epub' | 'pdf' | 'scanned-pages' | 'unknown';
+
+export interface RightsInfo {
+  licenseName?: string;
+  licenseUrl?: string;
+  rightsStatement?: string;
+  publicDomainStatus?: 'verified' | 'provider-claimed' | 'unknown' | 'not-public-domain';
+  attributionText?: string;
+}
+
+export interface ReadingSource {
+  capability: ReadingCapability;
+  format?: ContentFormat;
+  contentUrl?: string;
+  officialReaderUrl?: string;
+  borrowUrl?: string;
+  rights?: RightsInfo;
+  checkedAt?: string;
+}
 
 export interface Chapter {
   id: string;
@@ -26,6 +52,8 @@ export interface BookFormats {
   html?: string;
   plainText?: string;
   image?: string;
+  epub?: string;
+  pdf?: string;
 }
 
 export interface Book {
@@ -46,6 +74,9 @@ export interface Book {
   borrowUrl?: string;
   previewUrl?: string;
   externalReaderUrl?: string;
+  rights?: RightsInfo;
+  readingSource?: ReadingSource;
+  sourceAttribution?: string;
   chapters?: Chapter[];
 }
 

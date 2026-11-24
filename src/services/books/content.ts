@@ -2,24 +2,17 @@ import type { Book, Chapter } from '../../types/book';
 import { getBookOffline, saveBookOffline } from '../offlineStorage';
 import { fetchGutendexSearch } from './gutendex';
 import { normalizeGutendexBook } from './normalize';
+import { wikisourceAdapter } from './adapters/wikisourceAdapter';
 
 const TOTAL_RETRIEVAL_TIMEOUT_MS = 10_000;
-const SAME_ORIGIN_TIMEOUT_MS = 6_500;
-const FALLBACK_TIMEOUT_MS = 4_000;
+const SAME_ORIGIN_TIMEOUT_MS = 7_000;
 const MAX_TEXT_LENGTH = 1_500_000;
-const MIN_VALID_TEXT_LENGTH = 300;
+const MIN_VALID_TEXT_LENGTH = 150;
 
 const GUTENBERG_HOSTS = new Set(['www.gutenberg.org', 'gutenberg.org']);
 const SAME_ORIGIN_PROXY_PREFIX = '/api/gutenberg';
 
-// Safe Gutenberg path pattern: only allow cache/epub, ebooks, or files text routes
 const SAFE_GUTENBERG_PATH_REGEX = /^\/(cache\/epub\/\d+\/pg\d+(\.txt|\.txt\.utf-8)?|ebooks\/\d+\.txt\.utf-8|files\/\d+\/.*\.txt)$/i;
-
-// Last-resort public CORS proxies
-const PUBLIC_PROXIES: Array<(url: string) => string> = [
-  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-];
 
 export const isAbortError = (error: unknown): boolean =>
   error instanceof DOMException && error.name === 'AbortError';
@@ -28,13 +21,11 @@ export const toSameOriginProxyUrl = (rawUrl: string): string | null => {
   try {
     const parsed = new URL(rawUrl);
     if (!GUTENBERG_HOSTS.has(parsed.hostname)) return null;
-    // Check safe paths to avoid acting as an open proxy
     if (!SAFE_GUTENBERG_PATH_REGEX.test(parsed.pathname)) {
       if (!parsed.pathname.endsWith('.txt') && !parsed.pathname.endsWith('.txt.utf-8')) {
         return null;
       }
     }
-    // Prevent path traversal
     if (parsed.pathname.includes('..')) return null;
 
     return `${SAME_ORIGIN_PROXY_PREFIX}${parsed.pathname}${parsed.search}`;
@@ -125,7 +116,6 @@ export const extractChapters = (text: string): Chapter[] => {
       });
     }
 
-    // If there is substantial text before the first chapter, add an Introduction/Opening
     if (validChapters[0].index > 600) {
       const introText = text.slice(0, validChapters[0].index);
       const wordCount = introText.split(/\s+/).filter(Boolean).length;
@@ -142,7 +132,6 @@ export const extractChapters = (text: string): Chapter[] => {
   }
 
   // Fallback chunking: For books without explicit chapter labels, split into readable sections (~2500 words)
-  // to avoid DOM freezing and performance issues when rendering 500k+ word texts
   const words = text.split(/(\s+)/);
   const CHUNK_WORDS = 2500;
   const chapters: Chapter[] = [];
@@ -205,7 +194,6 @@ const fetchPlainText = async (
     if (!response.ok) throw new Error(`Text source returned HTTP ${response.status}.`);
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
 
-    // Handle encoding safely
     const buffer = await response.arrayBuffer();
     let text: string;
     if (contentType.includes('iso-8859-1') || contentType.includes('latin1')) {
@@ -233,47 +221,14 @@ const fetchPlainText = async (
   }
 };
 
-/** Resolves on the first valid provider response and cancels the remaining attempts. */
-const fetchFirstValid = async (
-  urls: string[],
-  signal: AbortSignal | undefined,
-  timeoutMs: number,
-): Promise<string> => {
-  if (urls.length === 0) throw new Error('No supported book text source was found.');
-  if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
-
-  const controller = new AbortController();
-  const forwardAbort = () => controller.abort();
-  signal?.addEventListener('abort', forwardAbort, { once: true });
-
-  try {
-    return await new Promise<string>((resolve, reject) => {
-      let remaining = urls.length;
-      const failures: unknown[] = [];
-
-      urls.forEach(url => {
-        void fetchPlainText(url, controller.signal, timeoutMs)
-          .then(resolve)
-          .catch(error => {
-            failures.push(error);
-            remaining -= 1;
-            if (remaining === 0) reject(failures[0] ?? new Error('No text source succeeded.'));
-          });
-      });
-    });
-  } catch {
-    if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
-    throw new Error('The book text source is temporarily unavailable.');
-  } finally {
-    controller.abort();
-    signal?.removeEventListener('abort', forwardAbort);
-  }
-};
-
 const getCandidateTextUrls = (book: Book): string[] => {
-  const candidates = [`https://www.gutenberg.org/cache/epub/${encodeURIComponent(book.id)}/pg${encodeURIComponent(book.id)}.txt`];
+  const candidates: string[] = [];
   const listed = book.formats.plainText ? forceHttps(book.formats.plainText) : null;
-  if (listed && !candidates.includes(listed)) candidates.push(listed);
+  if (listed) candidates.push(listed);
+
+  const defaultPg = `https://www.gutenberg.org/cache/epub/${encodeURIComponent(book.id)}/pg${encodeURIComponent(book.id)}.txt`;
+  if (!candidates.includes(defaultPg)) candidates.push(defaultPg);
+
   return candidates;
 };
 
@@ -283,23 +238,30 @@ const downloadGutenbergText = async (book: Book, signal?: AbortSignal): Promise<
     .map(toSameOriginProxyUrl)
     .filter((url): url is string => Boolean(url));
 
-  try {
-    return await fetchFirstValid(sameOriginUrls, signal, SAME_ORIGIN_TIMEOUT_MS);
-  } catch (sameOriginError) {
-    if (signal?.aborted || isAbortError(sameOriginError)) throw sameOriginError;
+  // 1. Try secure same-origin Netlify proxy first
+  for (const proxyUrl of sameOriginUrls) {
+    try {
+      return await fetchPlainText(proxyUrl, signal, SAME_ORIGIN_TIMEOUT_MS);
+    } catch {
+      if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    }
   }
 
-  // Fallback to CORS proxies in parallel if Netlify proxy is unavailable
-  const fallbackUrls = candidates.flatMap(sourceUrl => PUBLIC_PROXIES.map(build => build(sourceUrl)));
-  return fetchFirstValid(fallbackUrls, signal, FALLBACK_TIMEOUT_MS);
+  // 2. Direct Gutenberg fetch if in an environment with direct access
+  for (const directUrl of candidates) {
+    try {
+      return await fetchPlainText(directUrl, signal, SAME_ORIGIN_TIMEOUT_MS);
+    } catch {
+      if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    }
+  }
+
+  throw new Error('Project Gutenberg text could not be loaded via authorized routes.');
 };
 
 const normalizeSearchToken = (s: string): string =>
   s.toLowerCase().replace(/[^a-z0-9]/g, '');
 
-/**
- * Safely search for a Project Gutenberg full-text twin by checking BOTH title and author.
- */
 export const findGutenbergTwin = async (book: Book, signal?: AbortSignal): Promise<Book | null> => {
   const author = book.authors[0]?.name ?? '';
   const query = `${book.title} ${author}`.trim();
@@ -336,32 +298,24 @@ export const findGutenbergTwin = async (book: Book, signal?: AbortSignal): Promi
     return null;
   } catch (error) {
     if (signal?.aborted || isAbortError(error)) throw new DOMException('Request aborted', 'AbortError');
-    console.warn('No Gutenberg match for this record:', error);
     return null;
   }
 };
 
 /**
- * Download text from Internet Archive OCR djvu.txt endpoint.
+ * Download text from Internet Archive direct OCR djvu.txt endpoint.
  */
 const downloadInternetArchiveText = async (iaId: string, signal?: AbortSignal): Promise<string> => {
   const directUrl = `https://archive.org/stream/${encodeURIComponent(iaId)}/${encodeURIComponent(iaId)}_djvu.txt`;
-  const urls = [
-    directUrl,
-    ...PUBLIC_PROXIES.map(p => p(directUrl)),
-  ];
-
-  return fetchFirstValid(urls, signal, SAME_ORIGIN_TIMEOUT_MS);
+  return fetchPlainText(directUrl, signal, SAME_ORIGIN_TIMEOUT_MS);
 };
 
 /**
- * IndexedDB cache → direct / proxy retrieval → fallback gateways.
- * Bounded by a total deadline to prevent hanging.
+ * Retrieve verified book content with caching and bounded deadlines.
  */
 export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<string> => {
   if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
 
-  // Overall bounded deadline
   const overallController = new AbortController();
   const overallTimeout = setTimeout(() => overallController.abort(), TOTAL_RETRIEVAL_TIMEOUT_MS);
   const onSignalAbort = () => overallController.abort();
@@ -372,9 +326,8 @@ export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<
     try {
       const cached = await getBookOffline(book.id, book.source);
       if (cached && isUsableText(cached)) return cached;
-    } catch (error) {
+    } catch {
       if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
-      console.warn('Failed to read from offline cache:', error);
     }
 
     if (overallController.signal.aborted) {
@@ -382,26 +335,32 @@ export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<
       throw new Error('Loading book text timed out.');
     }
 
-    // 2. Resolve text source
     let text = '';
 
-    if (book.source === 'gutendex') {
+    // 2. Provider-specific content extraction
+    if (book.source === 'wikisource') {
+      text = await wikisourceAdapter.getReadingContent?.(book, overallController.signal) ?? '';
+    } else if (book.source === 'internetarchive') {
+      const iaId = book.iaId || book.id;
+      try {
+        const rawIa = await downloadInternetArchiveText(iaId, overallController.signal);
+        if (isUsableText(rawIa)) text = rawIa.trim();
+      } catch {
+        throw new Error('FULL_TEXT_UNAVAILABLE');
+      }
+    } else if (book.source === 'gutendex') {
       const raw = await downloadGutenbergText(book, overallController.signal);
       text = stripGutenbergBoilerplate(raw);
     } else if (book.source === 'openlibrary') {
-      // First try Internet Archive OCR text if iaId is present
       if (book.iaId && (book.readingCapability === 'FULL_TEXT' || book.ebookAccess === 'public')) {
         try {
           const rawIa = await downloadInternetArchiveText(book.iaId, overallController.signal);
-          if (isUsableText(rawIa)) {
-            text = rawIa.trim();
-          }
+          if (isUsableText(rawIa)) text = rawIa.trim();
         } catch {
-          // IA direct text failed, try Gutenberg twin
+          // IA direct text unavailable, fall through to Gutenberg twin search
         }
       }
 
-      // If no text yet, try finding a Gutenberg twin
       if (!text) {
         const twin = await findGutenbergTwin(book, overallController.signal);
         if (twin) {
@@ -413,23 +372,29 @@ export const getBookContent = async (book: Book, signal?: AbortSignal): Promise<
       if (!text) {
         throw new Error('FULL_TEXT_UNAVAILABLE');
       }
+    } else if (book.source === 'standardebooks') {
+      const twin = await findGutenbergTwin(book, overallController.signal);
+      if (twin) {
+        const raw = await downloadGutenbergText(twin, overallController.signal);
+        text = stripGutenbergBoilerplate(raw);
+      } else {
+        throw new Error('FULL_TEXT_UNAVAILABLE');
+      }
     }
 
     const trimmedText = text.length > MAX_TEXT_LENGTH ? text.slice(0, MAX_TEXT_LENGTH) : text;
 
-    // 3. Cache valid full text in IndexedDB
+    // 3. Cache in IndexedDB for fast offline reading
     try {
       await saveBookOffline(book.id, book.source, trimmedText);
-    } catch (error) {
-      console.warn('Failed to save book text offline:', error);
+    } catch {
+      // offline cache failure non-fatal
     }
 
     return trimmedText;
   } catch (err) {
     if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
-    if (err instanceof Error && err.message === 'FULL_TEXT_UNAVAILABLE') {
-      throw err;
-    }
+    if (err instanceof Error && err.message === 'FULL_TEXT_UNAVAILABLE') throw err;
     if (overallController.signal.aborted && !signal?.aborted) {
       throw new Error('Retrieving book content timed out. Please check your connection.');
     }
