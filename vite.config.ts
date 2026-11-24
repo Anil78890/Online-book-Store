@@ -14,7 +14,7 @@ const gutenbergProxy = {
   }
 };
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   server: { proxy: gutenbergProxy },
   preview: { proxy: gutenbergProxy },
@@ -23,6 +23,7 @@ export default defineConfig({
     exclude: ['tests/**/*.spec.ts', 'node_modules/**']
   },
   build: {
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: {
@@ -34,7 +35,10 @@ export default defineConfig({
     chunkSizeWarningLimit: 1000,
     minify: 'esbuild'
   },
+  esbuild: {
+    drop: mode === 'production' ? ['console', 'debugger'] : []
+  },
   optimizeDeps: {
     include: ['react', 'react-dom', 'lucide-react']
   }
-});
+}));

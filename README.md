@@ -1,8 +1,10 @@
 # BlueLeaf Books
 
+[![Netlify Status](https://api.netlify.com/api/v1/badges/529b2105-df3b-4d38-90be-8cf4dad6eabc/deploy-status)](https://app.netlify.com/projects/sage-khapse-0934ef/deploys)
+
 BlueLeaf Books is a calm, accessible, privacy-first web platform for discovering and reading legally accessible public-domain classics and open library collections. Built with React 18, TypeScript, Tailwind CSS, and Vite.
 
-Live deployment: [https://blueleaf-books.netlify.app/](https://blueleaf-books.netlify.app/)  
+Live deployment: [https://sage-khapse-0934ef.netlify.app/](https://sage-khapse-0934ef.netlify.app/)  
 Current working branch: `blueleaf-final-polish`
 
 ---

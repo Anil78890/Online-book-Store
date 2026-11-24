@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect } from 'react';
 import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { Toaster } from 'sonner';
 import Header from './components/Header';
@@ -25,6 +25,17 @@ const PageLoader = () => (
 
 const AppContent = () => {
   const { readingList, saveBook, removeBook, isBookSaved } = useReadingList();
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Prevent webpage saving (Ctrl+S / Cmd+S)
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   return (
     <div className="min-h-screen bg-white">
